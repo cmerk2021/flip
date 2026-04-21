@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flip</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif; }
+  #gameCanvas { display: block; width: 100vw; height: 100vh; }
+  #ui {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; display: flex; flex-direction: column;
+  }
+  #topBar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 24px 32px; pointer-events: none;
+  }
+  #logo {
+    font-size: 22px; font-weight: 700; letter-spacing: -1px;
+    opacity: 0.9; transition: color 0.8s;
+  }
+  #scoreArea { text-align: right; }
+  #score { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; transition: color 0.8s; }
+  #scoreLabel { font-size: 11px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.5; transition: color 0.8s; }
+  #overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    pointer-events: all; transition: background 0.8s; z-index: 100;
+  }
+  #overlay.hidden { display: none; }
+  .card {
+    padding: 40px 48px; border-radius: 20px;
+    text-align: center; max-width: 320px; width: 90%;
+    transition: background 0.8s, border-color 0.8s;
+  }
+  .card h1 { font-size: 48px; font-weight: 800; letter-spacing: -2px; margin-bottom: 8px; }
+  .card .tagline { font-size: 14px; opacity: 0.55; letter-spacing: 0.5px; margin-bottom: 32px; }
+  .card .final-score { font-size: 56px; font-weight: 800; letter-spacing: -2px; margin: 16px 0; }
+  .card .score-breakdown { font-size: 13px; opacity: 0.6; margin-bottom: 24px; }
+  #startBtn, #restartBtn {
+    padding: 14px 36px; border-radius: 100px; border: none;
+    font-size: 15px; font-weight: 600; letter-spacing: 0.3px;
+    cursor: pointer; pointer-events: all;
+    transition: transform 0.15s, background 0.8s, color 0.8s;
+  }
+  #startBtn:hover, #restartBtn:hover { transform: scale(1.04); }
+  #startBtn:active, #restartBtn:active { transform: scale(0.97); }
+  #hint { font-size: 12px; opacity: 0.4; margin-top: 14px; letter-spacing: 0.5px; }
+  #levelBadge {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase;
+    padding: 6px 16px; border-radius: 100px; opacity: 0; pointer-events: none;
+    transition: opacity 0.4s, background 0.8s, color 0.8s;
+  }
+  #levelBadge.show { opacity: 0.7; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="ui">
+  <div id="topBar">
+    <div id="logo">flip</div>
+    <div id="scoreArea">
+      <div id="score">0</div>
+      <div id="scoreLabel">score</div>
+    </div>
+  </div>
+</div>
+<div id="levelBadge"></div>
+<div id="overlay">
+  <div class="card" id="menuCard">
+    <h1 id="overlayTitle">flip</h1>
+    <div class="tagline" id="overlayTagline">dodge spikes. collect coins. survive.</div>
+    <div class="final-score" id="finalScore" style="display:none"></div>
+    <div class="score-breakdown" id="scoreBreakdown" style="display:none"></div>
+    <button id="startBtn">play</button>
+    <div id="hint">space or tap to flip</div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let W, H, midY;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  midY = H / 2;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const themes = [
+  { name: 'clean', bg: '#ffffff', fg: '#111111', line: '#e0e0e0', accent: '#111111', card: '#f5f5f5', cardText: '#111111', btn: '#111111', btnText: '#ffffff', badge: '#111111', badgeText: '#ffffff' },
+  { name: 'dusk', bg: '#1a1a2e', fg: '#e0e0ff', line: '#2a2a4e', accent: '#7c7cff', card: '#16213e', cardText: '#e0e0ff', btn: '#7c7cff', btnText: '#ffffff', badge: '#7c7cff', badgeText: '#fff' },
+  { name: 'ember', bg: '#1a0a00', fg: '#ff6b2b', line: '#2a1500', accent: '#ff6b2b', card: '#1a0a00', cardText: '#ff9955', btn: '#ff6b2b', btnText: '#fff', badge: '#ff6b2b', badgeText: '#fff' },
+  { name: 'abyss', bg: '#020010', fg: '#00ffcc', line: '#0a0030', accent: '#00ffcc', card: '#050020', cardText: '#00ffcc', btn: '#00ffcc', btnText: '#020010', badge: '#00ffcc', badgeText: '#020010' },
+  { name: 'void', bg: '#000000', fg: '#ff2255', line: '#1a0010', accent: '#ff2255', card: '#0a0008', cardText: '#ff4477', btn: '#ff2255', btnText: '#fff', badge: '#ff2255', badgeText: '#fff' }
+];
+
+let currentTheme = { ...themes[0] };
+let targetTheme = { ...themes[0] };
+let themeProgress = 1;
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function hexToRgb(hex) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return [r,g,b];
+}
+function lerpColor(c1, c2, t) {
+  const a = hexToRgb(c1), b = hexToRgb(c2);
+  return `rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`;
+}
+function getThemeColor(key) {
+  if (themeProgress >= 1) return targetTheme[key] ?? currentTheme[key];
+  return lerpColor(currentTheme[key], targetTheme[key], themeProgress);
+}
+function getInterpolatedTheme() {
+  if (themeProgress >= 1) return { ...targetTheme };
+  const t = {};
+  for (const key of Object.keys(currentTheme)) t[key] = getThemeColor(key);
+  return t;
+}
+
+let state = 'menu';
+let score = 0, spikesAvoided = 0, coinsCollected = 0;
+let player, obstacles, coins, particles, floatTexts;
+let gameTime = 0, lastSpike = 0, lastCoin = 0, nextCoinTime = 300;
+let level = 0, lastLevel = -1;
+let animFrame;
+
+const PLAYER_SIZE = 22;
+const PLAYER_GAP = 6;
+const LINE_THICKNESS = 2;
+const COIN_BOB_AMPLITUDE = 2.5;
+
+function getTrackCenterY(side) {
+  return side === 'top'
+    ? midY - PLAYER_GAP - PLAYER_SIZE / 2
+    : midY + PLAYER_GAP + PLAYER_SIZE / 2;
+}
+
+function getCoinY(coin, t) {
+  const bob = Math.sin(t * 0.04 + coin.bobOffset) * COIN_BOB_AMPLITUDE;
+  return getTrackCenterY(coin.side) + bob;
+}
+
+function initGame() {
+  player = {
+    y: midY - 6 - PLAYER_SIZE,
+    side: 'top',
+    vy: 0, flipping: false,
+    squish: 1, squishDir: 0,
+    trail: [], glowAlpha: 0
+  };
+  obstacles = [];
+  coins = [];
+  particles = [];
+  floatTexts = [];
+  score = 0; spikesAvoided = 0; coinsCollected = 0;
+  gameTime = 0; lastSpike = 0; lastCoin = 600; nextCoinTime = 300;
+  lastSpikeSide = null; consecutiveSideCount = 0;
+  level = 0; lastLevel = -1;
+  themeProgress = 1;
+  currentTheme = { ...themes[0] };
+  targetTheme = { ...themes[0] };
+  updateUI();
+}
+
+function getSpeed() {
+  const baseRamp = 3.2 + Math.min(gameTime / 600, 1) * 4.5;
+  const stageRamp = Math.floor(gameTime / 1400) * 0.95;
+  const endlessRamp = Math.max(0, gameTime - 3200) / 1800 * 1.6;
+  return baseRamp + stageRamp + endlessRamp;
+}
+function getSpawnInterval() {
+  const earlyRamp = 120 - Math.min(gameTime / 34, 64);
+  const lateRamp = Math.max(0, gameTime - 2200) / 95;
+  return Math.max(34, earlyRamp - lateRamp);
+}
+function getFollowupChance() {
+  if (gameTime < 2600) return 0;
+  return Math.min(0.45, 0.12 + (gameTime - 2600) / 7000);
+}
+function getFollowupGap() {
+  const minGap = Math.max(96, 190 - gameTime / 40);
+  const maxGap = Math.max(minGap + 20, 250 - gameTime / 30);
+  return minGap + Math.random() * (maxGap - minGap);
+}
+function getCoinInterval() {
+  return 300 + Math.random() * 400;
+}
+function getLevel() {
+  if (gameTime < 600) return 0;
+  if (gameTime < 1500) return 1;
+  if (gameTime < 3000) return 2;
+  if (gameTime < 5000) return 3;
+  return 4;
+}
+
+const levelNames = ['', 'dusk', 'ember', 'abyss', 'void'];
+
+function doFlip() {
+  if (state !== 'playing') return;
+  player.side = player.side === 'top' ? 'bottom' : 'top';
+  player.flipping = true;
+  player.squish = 0.6;
+  for (let i = 0; i < 8; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 1.5 + Math.random() * 3;
+    particles.push({
+      x: W * 0.18, y: midY,
+      vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd,
+      life: 1, size: 3 + Math.random() * 3,
+      color: getThemeColor('accent')
+    });
+  }
+}
+
+let lastSpikeSide = null;
+let consecutiveSideCount = 0;
+
+function addSpike(side, xOffset = 30) {
+  const hScale = 1 + Math.min(gameTime / 5500, 1) * 0.32;
+  const wScale = 1 + Math.min(gameTime / 7000, 1) * 0.22;
+  const spikeH = (28 + Math.random() * 16) * hScale;
+  const spikeW = (18 + Math.random() * 10) * wScale;
+  obstacles.push({ x: W + xOffset, side, spikeH, spikeW, passed: false, scored: false });
+}
+
+function spawnSpike() {
+  let side;
+  if (consecutiveSideCount >= 2) {
+    side = lastSpikeSide === 'top' ? 'bottom' : 'top';
+  } else {
+    side = Math.random() < 0.5 ? 'top' : 'bottom';
+  }
+  if (side === lastSpikeSide) {
+    consecutiveSideCount++;
+  } else {
+    consecutiveSideCount = 1;
+    lastSpikeSide = side;
+  }
+  addSpike(side);
+
+  if (Math.random() < getFollowupChance()) {
+    const followSide = side === 'top' ? 'bottom' : 'top';
+    addSpike(followSide, 30 + getFollowupGap());
+    lastSpikeSide = followSide;
+    consecutiveSideCount = 1;
+  }
+}
+
+function spawnCoin() {
+  const side = Math.random() < 0.5 ? 'top' : 'bottom';
+  coins.push({ x: W + 20, side, collected: false, bobOffset: Math.random() * Math.PI * 2, scale: 0, scaleTarget: 1 });
+}
+
+function drawSpike(x, side, spikeW, spikeH, color) {
+  const baseY = midY + (side === 'top' ? -LINE_THICKNESS/2 : LINE_THICKNESS/2);
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (side === 'top') {
+    ctx.moveTo(x - spikeW/2, baseY);
+    ctx.lineTo(x, baseY - spikeH);
+    ctx.lineTo(x + spikeW/2, baseY);
+  } else {
+    ctx.moveTo(x - spikeW/2, baseY);
+    ctx.lineTo(x, baseY + spikeH);
+    ctx.lineTo(x + spikeW/2, baseY);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const px = W * 0.18;
+  // targetY is always the top-left corner of the player box
+  // top side: box sits above midY with a small gap, bottom edge = midY - GAP
+  // bottom side: box sits below midY with a small gap, top edge = midY + GAP
+  const targetY = player.side === 'top'
+    ? midY - PLAYER_GAP - PLAYER_SIZE
+    : midY + PLAYER_GAP;
+
+  if (player.flipping) {
+    player.y = lerp(player.y, targetY, 0.25);
+    if (Math.abs(player.y - targetY) < 0.5) { player.y = targetY; player.flipping = false; }
+  } else {
+    player.y = lerp(player.y, targetY, 0.3);
+  }
+  player.squish = lerp(player.squish, 1, 0.18);
+
+  const centerX = px;
+  const centerY = player.y + PLAYER_SIZE / 2;
+
+  player.trail.unshift({ x: centerX, y: centerY });
+  if (player.trail.length > 10) player.trail.pop();
+
+  const fgColor = getThemeColor('fg');
+  const accentColor = getThemeColor('accent');
+
+  for (let i = 1; i < player.trail.length; i++) {
+    const alpha = (1 - i / player.trail.length) * 0.18;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = accentColor;
+    const ts = PLAYER_SIZE * (1 - i/player.trail.length) * player.squish;
+    const tx = player.trail[i].x - ts/2;
+    const ty = player.trail[i].y - ts/2;
+    const radius = 4 * (1 - i/player.trail.length);
+    ctx.beginPath();
+    ctx.roundRect(tx, ty, ts, ts, radius);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Draw box centered on centerX/centerY with squish applied
+  const sx = player.squish;
+  const sy = 2 - player.squish;
+  const rw = PLAYER_SIZE * sx;
+  const rh = PLAYER_SIZE * sy;
+  ctx.save();
+  ctx.fillStyle = fgColor;
+  ctx.beginPath();
+  ctx.roundRect(centerX - rw/2, centerY - rh/2, rw, rh, 5);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCoin(coin, t) {
+  const fgColor = getThemeColor('fg');
+  const cy = getCoinY(coin, t);
+  coin.scale = lerp(coin.scale, coin.scaleTarget, 0.15);
+  const s = coin.scale * 9;
+  ctx.save();
+  ctx.globalAlpha = coin.scale;
+  ctx.strokeStyle = fgColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(coin.x, cy, s, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = fgColor;
+  ctx.beginPath();
+  ctx.arc(coin.x, cy, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  coin._cy = cy;
+}
+
+function checkCollisions() {
+  const px = W * 0.18;
+  const margin = 5;
+  // Player bounding box (use actual y, not squished)
+  const pLeft = px - PLAYER_SIZE/2 - margin;
+  const pRight = px + PLAYER_SIZE/2 + margin;
+  const pTop = player.y + margin;
+  const pBottom = player.y + PLAYER_SIZE - margin;
+
+  for (const obs of obstacles) {
+    const ox = obs.x, ow = obs.spikeW, oh = obs.spikeH;
+    if (ox + ow/2 < pLeft || ox - ow/2 > pRight) continue;
+    if (obs.side === 'top') {
+      // spike tip is at midY - oh, base at midY
+      if (pTop < midY && pBottom > midY - oh + margin) return true;
+    } else {
+      // spike tip is at midY + oh, base at midY
+      if (pBottom > midY && pTop < midY + oh - margin) return true;
+    }
+  }
+  return false;
+}
+
+function updateUI() {
+  document.getElementById('score').textContent = score;
+}
+
+function resetOverlayForRun() {
+  document.getElementById('overlayTitle').textContent = 'flip';
+  document.getElementById('overlayTitle').style.fontSize = '48px';
+  document.getElementById('overlayTagline').textContent = 'dodge spikes. collect coins. survive.';
+  document.getElementById('finalScore').style.display = 'none';
+  document.getElementById('scoreBreakdown').style.display = 'none';
+  document.getElementById('startBtn').style.display = 'inline-block';
+  document.getElementById('restartBtn').style.display = 'none';
+}
+
+let lastTime = 0;
+function gameLoop(ts) {
+  const dt = Math.min(ts - lastTime, 32);
+  lastTime = ts;
+  if (state === 'playing') {
+    gameTime++;
+    const newLevel = getLevel();
+    if (newLevel !== lastLevel) {
+      lastLevel = newLevel;
+      level = newLevel;
+      if (newLevel > 0) {
+        currentTheme = { ...getInterpolatedTheme() };
+        targetTheme = { ...themes[Math.min(newLevel, themes.length-1)] };
+        themeProgress = 0;
+        const badge = document.getElementById('levelBadge');
+        badge.textContent = levelNames[newLevel];
+        badge.style.background = targetTheme.badge;
+        badge.style.color = targetTheme.badgeText;
+        badge.classList.add('show');
+        setTimeout(() => badge.classList.remove('show'), 2000);
+      }
+    }
+    if (themeProgress < 1) {
+      themeProgress = Math.min(1, themeProgress + 0.008);
+      if (themeProgress >= 1) currentTheme = { ...targetTheme };
+    }
+    if (gameTime - lastSpike > getSpawnInterval()) { spawnSpike(); lastSpike = gameTime; }
+    if (gameTime > 200 && gameTime >= nextCoinTime) { spawnCoin(); nextCoinTime = gameTime + 280 + Math.floor(Math.random() * 320); }
+    const spd = getSpeed();
+    for (const obs of obstacles) {
+      obs.x -= spd;
+      if (!obs.scored && obs.x + obs.spikeW < W * 0.18 - PLAYER_SIZE) {
+        obs.scored = true; spikesAvoided++; score += 1; updateUI();
+      }
+    }
+    obstacles = obstacles.filter(o => o.x > -60);
+    for (const coin of coins) {
+      coin.x -= spd * 0.9;
+      const cy = getCoinY(coin, gameTime);
+      coin._cy = cy;
+      if (!coin.collected) {
+        const px = W * 0.18, py = player.y;
+        const dist = Math.hypot(px - coin.x, py + PLAYER_SIZE/2 - cy);
+        if (dist < PLAYER_SIZE + 9) {
+          coin.collected = true; coin.scaleTarget = 0;
+          coinsCollected++; score += 3; updateUI();
+          floatTexts.push({ x: coin.x, y: cy, text: '+3', life: 1, vy: -1.5 });
+          for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * Math.PI * 2;
+            particles.push({ x: coin.x, y: cy, vx: Math.cos(a)*2.5, vy: Math.sin(a)*2.5, life: 1, size: 3, color: getThemeColor('fg') });
+          }
+        }
+      }
+    }
+    coins = coins.filter(c => c.x > -40 && (!c.collected || c.scale > 0.01));
+    for (const p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life -= 0.04; }
+    particles = particles.filter(p => p.life > 0);
+    for (const f of floatTexts) { f.y += f.vy; f.life -= 0.025; }
+    floatTexts = floatTexts.filter(f => f.life > 0);
+    if (checkCollisions()) { die(); }
+  }
+  draw();
+  animFrame = requestAnimationFrame(gameLoop);
+}
+
+function draw() {
+  const bgColor = getThemeColor('bg');
+  const fgColor = getThemeColor('fg');
+  const lineColor = getThemeColor('line');
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = LINE_THICKNESS;
+  ctx.beginPath();
+  ctx.moveTo(0, midY);
+  ctx.lineTo(W, midY);
+  ctx.stroke();
+  for (const coin of coins) drawCoin(coin, gameTime);
+  for (const obs of obstacles) drawSpike(obs.x, obs.side, obs.spikeW, obs.spikeH, fgColor);
+  if (state === 'playing' || state === 'dead') drawPlayer();
+  for (const p of particles) {
+    ctx.save(); ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+  for (const f of floatTexts) {
+    ctx.save(); ctx.globalAlpha = f.life; ctx.fillStyle = fgColor;
+    ctx.font = '500 13px -apple-system, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y); ctx.restore();
+  }
+  document.getElementById('logo').style.color = fgColor;
+  document.getElementById('score').style.color = fgColor;
+  document.getElementById('scoreLabel').style.color = fgColor;
+}
+
+function die() {
+  state = 'dead';
+  const px = W * 0.18, py = player.y + PLAYER_SIZE/2;
+  for (let i = 0; i < 20; i++) {
+    const a = Math.random() * Math.PI * 2, spd = 2 + Math.random() * 5;
+    particles.push({ x: px, y: py, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd, life: 1, size: 4 + Math.random()*4, color: getThemeColor('accent') });
+  }
+  setTimeout(() => {
+    const overlay = document.getElementById('overlay');
+    const t = themes[Math.min(level, themes.length-1)];
+    overlay.style.background = t.bg + 'ee';
+    const card = document.getElementById('menuCard');
+    card.style.background = t.card; card.style.color = t.cardText;
+    document.getElementById('overlayTitle').textContent = 'game over';
+    document.getElementById('overlayTitle').style.fontSize = '36px';
+    document.getElementById('overlayTagline').textContent = 'you hit a spike';
+    document.getElementById('finalScore').style.display = 'block';
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('finalScore').style.color = t.accent;
+    document.getElementById('scoreBreakdown').style.display = 'block';
+    document.getElementById('scoreBreakdown').textContent = `${spikesAvoided} spikes · ${coinsCollected} coins`;
+    document.getElementById('scoreBreakdown').style.color = t.cardText;
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('restartBtn').style.display = 'inline-block';
+    document.getElementById('restartBtn').style.background = t.btn;
+    document.getElementById('restartBtn').style.color = t.btnText;
+    document.getElementById('hint').style.color = t.cardText;
+    overlay.classList.remove('hidden');
+  }, 600);
+}
+
+function startGame() {
+  resetOverlayForRun();
+  document.getElementById('overlay').classList.add('hidden');
+  initGame(); state = 'playing';
+}
+
+const restartBtn = document.createElement('button');
+restartBtn.id = 'restartBtn';
+restartBtn.textContent = 'play again';
+restartBtn.style.cssText = 'padding:14px 36px;border-radius:100px;border:none;font-size:15px;font-weight:600;letter-spacing:0.3px;cursor:pointer;display:none;transition:transform 0.15s;';
+restartBtn.addEventListener('click', startGame);
+document.getElementById('menuCard').insertBefore(restartBtn, document.getElementById('hint'));
+document.getElementById('startBtn').addEventListener('click', startGame);
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); if (state === 'playing') doFlip(); }
+});
+canvas.addEventListener('pointerdown', e => { e.preventDefault(); if (state === 'playing') doFlip(); });
+
+initGame(); draw();
+animFrame = requestAnimationFrame(gameLoop);
+
+const overlay = document.getElementById('overlay');
+overlay.style.background = 'rgba(255,255,255,0.92)';
+const card = document.getElementById('menuCard');
+card.style.cssText += 'background:#f5f5f5;color:#111;';
+document.getElementById('startBtn').style.cssText += 'background:#111;color:#fff;';
+resetOverlayForRun();
+</script>
+</body>
+</html>
